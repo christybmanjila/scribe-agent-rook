@@ -3,8 +3,79 @@ name: Rook assurance
 # agent or its suite (only the scenarios the change affects), and on demand (the whole gate
 # list); an optional nightly run is commented out below. Each run calls the real agent and its
 # model provider, and spends Rook credits.
+#
+# The run is split into four jobs so the run graph shows what happened:
+#   1. Select scenarios    which gated scenarios this run covers
+#   2. Run reviewed suite  install Rook, run ci/rook-ci.sh (the release gate), keep the results
+#   3. Scenario report     one job per scenario: a readable HTML report, uploaded on its own
+#   4. Evidence summary    one table on the run page: every scenario, its status, its report link
 on:
   workflow_dispatch:
+    # Every field is optional. Leave one blank to use the value configured on the
+    # rook-assurance environment (Settings -> Environments); fill it in to override it for this
+    # run only. Pull-request runs always use the environment values.
+    #
+    # Secret fields: GitHub does not treat dispatch inputs as secrets. The job masks them in the
+    # log before anything can print them, but they are still stored with the run's event, so
+    # anyone with write access to the repository can read them. For a key you keep using, set
+    # it as an environment secret and leave the field blank.
+    inputs:
+      rook_env:
+        description: 'Rook servers: prod or stage (blank = environment setting, else prod)'
+        required: false
+        type: string
+      rook_project_id:
+        description: 'ROOK_PROJECT_ID (blank = environment variable)'
+        required: false
+        type: string
+      rook_agent_id:
+        description: 'ROOK_AGENT_ID (blank = environment variable)'
+        required: false
+        type: string
+      rook_profile:
+        description: 'ROOK_PROFILE (blank = environment variable)'
+        required: false
+        type: string
+      rook_scenario_ids:
+        description: 'ROOK_SCENARIO_IDS, comma-separated, no spaces (blank = environment variable)'
+        required: false
+        type: string
+      rook_allow_rules:
+        description: 'ROOK_ALLOW_RULES, one rule (blank = environment variable; use it for several)'
+        required: false
+        type: string
+      rook_concurrency:
+        description: 'ROOK_CONCURRENCY (blank = environment variable, else 1)'
+        required: false
+        type: string
+      llm_provider:
+        description: 'LLM_PROVIDER (blank = environment variable)'
+        required: false
+        type: string
+      anthropic_base_url:
+        description: 'ANTHROPIC_BASE_URL (blank = environment variable)'
+        required: false
+        type: string
+      glm_model:
+        description: 'GLM_MODEL (blank = environment variable)'
+        required: false
+        type: string
+      lt_username:
+        description: 'Secret LT_USERNAME (blank = environment secret)'
+        required: false
+        type: string
+      lt_access_key:
+        description: 'Secret LT_ACCESS_KEY (blank = environment secret)'
+        required: false
+        type: string
+      scribe_api_token:
+        description: 'Secret SCRIBE_API_TOKEN (blank = environment secret)'
+        required: false
+        type: string
+      glm_api_key:
+        description: 'Secret GLM_API_KEY (blank = environment secret)'
+        required: false
+        type: string
   # Nightly full run on main (off in this demo to save credits). It catches regressions a
   # PR's selection can't see, such as a model or prompt change moving a feature whose code
   # did not change. To turn it on, uncomment the two lines below: 02:30 UTC, weekdays.
@@ -29,42 +100,32 @@ concurrency:
   group: rook-assurance-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 jobs:
-  assurance:
+  select:
+    name: 1. Select scenarios
     # The PR's own code runs with these secrets: the agent and the profile's hook scripts.
     # So only PRs from branches in this repository run. Fork PRs get no secrets from
     # `pull_request` anyway, and `pull_request_target` must never be used here
     # (TestMu AI: "Do not run untrusted pull-request hook scripts with repository secrets.").
-    # Manual and nightly runs stay limited to main.
+    # Manual and nightly runs stay limited to main. Every later job needs this one, so the
+    # guard covers the whole run.
     if: >-
       ((github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && github.ref == 'refs/heads/main') ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
-    # One scenario at a time, and a single execute can take up to ~50 s on the configured model.
-    timeout-minutes: 60
+    timeout-minutes: 10
     environment: rook-assurance
     env:
-      # Which Rook servers the public CLI talks to: prod unless the ROOK_ENV variable says stage.
-      # Stage only accepts the LambdaTest VPN, so GitHub-hosted runners get a Cloudflare 403
-      # there; set ROOK_ENV=stage only once CI has stage access or runs on a VPN runner.
-      ROOK_ENV: ${{ vars.ROOK_ENV || 'prod' }}
-      ROOK_PROJECT_ID: ${{ vars.ROOK_PROJECT_ID }}
-      ROOK_AGENT_ID: ${{ vars.ROOK_AGENT_ID }}
-      ROOK_PROFILE: ${{ vars.ROOK_PROFILE }}
-      ROOK_SCENARIO_IDS: ${{ vars.ROOK_SCENARIO_IDS }}
-      ROOK_ALLOW_RULES: ${{ vars.ROOK_ALLOW_RULES }}
-      ROOK_CONCURRENCY: ${{ vars.ROOK_CONCURRENCY }}
-      # Dashboard label: github-pr12-<run>-<attempt> for a PR, github-<run>-<attempt> otherwise.
-      ROOK_RUN_NAME: github-${{ github.event.pull_request.number && format('pr{0}-', github.event.pull_request.number) || '' }}${{ github.run_id }}-${{ github.run_attempt }}
+      ROOK_SCENARIO_IDS: ${{ inputs.rook_scenario_ids || vars.ROOK_SCENARIO_IDS }}
+    outputs:
+      ids: ${{ steps.select.outputs.ids }}
+      mode: ${{ steps.select.outputs.mode }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           # Full history, so a PR can be diffed against its base to pick scenarios.
           fetch-depth: 0
-      # incident-scribe is a Python CLI that spawns its Node ops-directory MCP server.
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
@@ -86,9 +147,111 @@ jobs:
             printf '### Rook scenario selection: all\n\n%s run: the whole gate list `%s`.\n' \
               "$GITHUB_EVENT_NAME" "$ROOK_SCENARIO_IDS" >> "$GITHUB_STEP_SUMMARY"
           fi
+      # The same selection as a JSON list, for the per-scenario report jobs.
+      - name: Prepare the scenario report matrix
+        id: matrix
+        shell: bash
+        env:
+          IDS: ${{ steps.select.outputs.ids }}
+        run: |
+          set -euo pipefail
+          printf 'matrix=%s\n' "$(jq -cn --arg ids "$IDS" '$ids | split(",") | map(select(. != ""))')" \
+            >> "$GITHUB_OUTPUT"
+
+  run:
+    name: 2. Run reviewed suite
+    needs: select
+    # Nothing selected (the change touches no gated scenario's feature): pass without a run.
+    if: needs.select.outputs.ids != ''
+    runs-on: ubuntu-24.04
+    # One scenario at a time, and a single execute can take up to ~50 s on the configured model.
+    timeout-minutes: 60
+    environment: rook-assurance
+    env:
+      # Each value: what was typed into the run form, else the environment's variable.
+      # Which Rook servers the public CLI talks to: prod unless ROOK_ENV says stage.
+      # Stage only accepts the LambdaTest VPN, so GitHub-hosted runners get a Cloudflare 403
+      # there; set ROOK_ENV=stage only once CI has stage access or runs on a VPN runner.
+      ROOK_ENV: ${{ inputs.rook_env || vars.ROOK_ENV || 'prod' }}
+      ROOK_PROJECT_ID: ${{ inputs.rook_project_id || vars.ROOK_PROJECT_ID }}
+      ROOK_AGENT_ID: ${{ inputs.rook_agent_id || vars.ROOK_AGENT_ID }}
+      ROOK_PROFILE: ${{ inputs.rook_profile || vars.ROOK_PROFILE }}
+      ROOK_SCENARIO_IDS: ${{ inputs.rook_scenario_ids || vars.ROOK_SCENARIO_IDS }}
+      ROOK_ALLOW_RULES: ${{ inputs.rook_allow_rules || vars.ROOK_ALLOW_RULES }}
+      ROOK_CONCURRENCY: ${{ inputs.rook_concurrency || vars.ROOK_CONCURRENCY }}
+      # The agent's own model configuration (its .env locally).
+      LLM_PROVIDER: ${{ inputs.llm_provider || vars.LLM_PROVIDER }}
+      ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url || vars.ANTHROPIC_BASE_URL }}
+      GLM_MODEL: ${{ inputs.glm_model || vars.GLM_MODEL }}
+      # Dashboard label: github-pr12-<run>-<attempt> for a PR, github-<run>-<attempt> otherwise.
+      ROOK_RUN_NAME: github-${{ github.event.pull_request.number && format('pr{0}-', github.event.pull_request.number) || '' }}${{ github.run_id }}-${{ github.run_attempt }}
+    outputs:
+      run_id: ${{ steps.run_id.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # incident-scribe is a Python CLI that spawns its Node ops-directory MCP server.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      # Secrets: a value typed into the run form wins, else the environment secret. A typed
+      # value is read from the event file rather than through an expression, and masked
+      # before it reaches GITHUB_ENV, so it shows as *** like a secret everywhere after this.
+      - name: Resolve secrets (run form, else environment)
+        shell: bash
+        env:
+          ENV_LT_USERNAME: ${{ secrets.LT_USERNAME }}
+          ENV_LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
+          # The profile's declared variable.
+          ENV_SCRIBE_API_TOKEN: ${{ secrets.SCRIBE_API_TOKEN }}
+          ENV_GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+        run: |
+          set -euo pipefail
+          {
+            echo '### Run configuration'
+            echo
+            echo '| Setting | Source | Value |'
+            echo '| --- | --- | --- |'
+          } >> "$GITHUB_STEP_SUMMARY"
+          for name in LT_USERNAME LT_ACCESS_KEY SCRIBE_API_TOKEN GLM_API_KEY; do
+            key=$(printf '%s' "$name" | tr 'A-Z' 'a-z')
+            typed=$(jq -r --arg k "$key" '.inputs[$k] // empty' "$GITHUB_EVENT_PATH" | tr -d '\r' \
+              | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+            fallback="ENV_$name"
+            if [ -n "$typed" ]; then
+              echo "::add-mask::$typed"
+              value=$typed source='run form'
+            else
+              value=${!fallback} source='environment secret'
+            fi
+            if [ -z "$value" ]; then source='not set'; fi
+            if [ -n "$value" ]; then
+              delimiter="ROOK_$(openssl rand -hex 12)"
+              printf '%s<<%s\n%s\n%s\n' "$name" "$delimiter" "$value" "$delimiter" >> "$GITHUB_ENV"
+            fi
+            echo "$name: $source"
+            echo "| \`$name\` | $source | *** |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          for pair in rook_env:ROOK_ENV rook_project_id:ROOK_PROJECT_ID rook_agent_id:ROOK_AGENT_ID \
+            rook_profile:ROOK_PROFILE rook_scenario_ids:ROOK_SCENARIO_IDS rook_allow_rules:ROOK_ALLOW_RULES \
+            rook_concurrency:ROOK_CONCURRENCY llm_provider:LLM_PROVIDER \
+            anthropic_base_url:ANTHROPIC_BASE_URL glm_model:GLM_MODEL; do
+            key=${pair%%:*} name=${pair#*:}
+            if [ -n "$(jq -r --arg k "$key" '.inputs[$k] // empty' "$GITHUB_EVENT_PATH")" ]; then
+              source='run form'
+            elif [ -n "${!name}" ]; then
+              source='environment variable'
+            else
+              source='not set'
+            fi
+            echo "| \`$name\` | $source | \`${!name:-}\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
       # The public CLI; ROOK_ENV above points it at stage or prod.
       - name: Install pinned public Rook CLI
-        if: steps.select.outputs.ids != ''
         shell: bash
         run: |
           set -euo pipefail
@@ -101,27 +264,283 @@ jobs:
           echo "ROOK_HOME=$RUNNER_TEMP/rook-home" >> "$GITHUB_ENV"
           command -v jq
       - name: Run the reviewed suite
-        # Nothing selected (the change touches no gated scenario's feature): pass without a run.
-        if: steps.select.outputs.ids != ''
         shell: bash
         env:
           # The selection, not the whole gate list.
-          ROOK_SCENARIO_IDS: ${{ steps.select.outputs.ids }}
-          LT_USERNAME: ${{ secrets.LT_USERNAME }}
-          LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
-          # The profile's declared variable.
-          SCRIBE_API_TOKEN: ${{ secrets.SCRIBE_API_TOKEN }}
-          # The agent's own model configuration (its .env locally).
-          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
-          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
-          GLM_MODEL: ${{ vars.GLM_MODEL }}
-          GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+          ROOK_SCENARIO_IDS: ${{ needs.select.outputs.ids }}
         run: bash ci/rook-ci.sh
+      # Read back for the report jobs; empty when Rook never got as far as a run.
+      - name: Record the Rook run ID
+        id: run_id
+        if: always()
+        shell: bash
+        run: |
+          run_id=$(jq -r '.run_id // empty' rook-results/run.json 2>/dev/null || true)
+          printf 'run_id=%s\n' "$run_id" >> "$GITHUB_OUTPUT"
+          echo "Rook run ID: ${run_id:-none}"
       - name: Preserve results even on failure
-        if: always() && steps.select.outputs.mode != 'none'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: rook-${{ github.run_id }}-${{ github.run_attempt }}
           path: rook-results/
           if-no-files-found: warn
           retention-days: 7
+
+  reports:
+    name: 3. Scenario report (${{ matrix.scenario }})
+    needs: [select, run]
+    # Also after a blocked gate: a failing scenario is the one whose report matters most.
+    if: >-
+      always() && needs.select.result == 'success' && needs.select.outputs.ids != '' &&
+      (needs.run.result == 'success' || needs.run.result == 'failure')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ fromJSON(needs.select.outputs.matrix) }}
+    env:
+      SCENARIO: ${{ matrix.scenario }}
+      RUN_ID: ${{ needs.run.outputs.run_id }}
+      # With archive: false the file name is the artifact name, so it carries run and attempt.
+      REPORT: rook-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.scenario }}.html
+    steps:
+      - name: Download the run's results
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: rook-${{ github.run_id }}-${{ github.run_attempt }}
+          path: rook-results
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Render the scenario report
+        shell: bash
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pyyaml==6.0.2
+          mkdir -p evidence
+          if [ -f rook-results/evidence.tar.gz ]; then tar -xzf rook-results/evidence.tar.gz -C evidence; fi
+          dir=""
+          if [ -n "$RUN_ID" ]; then
+            dir=$(find evidence -type d -path "*/runs/$RUN_ID/scenarios/$SCENARIO" -print -quit)
+          fi
+          echo "evidence: ${dir:-none for $SCENARIO}"
+          python - "$dir" > "$REPORT" <<'PY'
+          import html, json, os, sys
+          from pathlib import Path
+          import yaml
+
+          sys.stdout.reconfigure(encoding="utf-8")
+
+          sc, run_id, run_url = os.environ["SCENARIO"], os.environ["RUN_ID"], os.environ["RUN_URL"]
+          d = Path(sys.argv[1]) if sys.argv[1] else None
+
+          def load(name, parse):
+              try:
+                  return parse((d / name).read_text(encoding="utf-8")) or {}
+              except Exception:
+                  return {}
+
+          snap = load("snapshot.yaml", yaml.safe_load) if d else {}
+          verdict = load("verdict.yaml", yaml.safe_load) if d else {}
+          response = load("response.json", json.loads) if d else {}
+          status = verdict.get("status") or ("Not run" if not d else "Unjudged")
+          e = lambda v: html.escape("" if v is None else str(v))
+          tone = {"Pass": "pass", "Fail": "fail", "Unable to Verify": "warn"}.get(status, "muted")
+
+          def section(title, body):
+              return f"<section><h2>{e(title)}</h2>{body}</section>" if body else ""
+
+          rows = "".join(
+              f"<tr><td><b>{e(c.get('criterion_id'))}</b> {e(c.get('criterion'))}</td>"
+              f"<td><span class='badge {({'Pass': 'pass', 'Fail': 'fail'}).get(c.get('status'), 'warn')}'>"
+              f"{e(c.get('status'))}</span></td><td>{e(c.get('expected'))}</td>"
+              f"<td>{e(c.get('achieved'))}</td><td class='quote'>{e(c.get('evidence'))}</td>"
+              f"<td>{e(c.get('confidence'))}</td></tr>"
+              for c in verdict.get("criteria") or []
+          )
+          criteria = (
+              "<div class='scroll'><table><tr><th>Criterion</th><th>Status</th><th>Expected</th>"
+              f"<th>Achieved</th><th>Evidence</th><th>Confidence</th></tr>{rows}</table></div>"
+              if rows else ""
+          )
+          metrics = "".join(
+              f"<div class='metric'><span>{e(k.replace('_', ' '))}</span><b>{e(v)}</b></div>"
+              for k, v in (verdict.get("metrics") or {}).items()
+          )
+          turns = "".join(
+              f"<div class='turn'><div class='role'>{e(t.get('role'))}</div><pre>{e(t.get('content'))}</pre></div>"
+              for t in response.get("transcript") or []
+          )
+          forbidden = snap.get("forbidden") or []
+          hits = verdict.get("forbidden_hits") or []
+          forbidden_html = (
+              "<ul>" + "".join(f"<li>{e(f)}</li>" for f in forbidden) + "</ul>"
+              + f"<p>Hits in the reply: <b>{e(', '.join(map(str, hits)) or 'none')}</b></p>"
+              if forbidden else ""
+          )
+          counts = (
+              f"{e(verdict.get('pass_count', 0))} pass · {e(verdict.get('fail_count', 0))} fail · "
+              f"{e(verdict.get('unable_to_verify_count', 0))} unable to verify"
+              if verdict else ""
+          )
+          missing = "" if d else (
+              "<p class='note'>No evidence for this scenario: the run stopped before Rook reached it. "
+              "Open the run log for job 2 to see why.</p>"
+          )
+          unverifiable = verdict.get("unverifiable_reason")
+
+          print(f"""<!doctype html>
+          <html lang="en"><head><meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>{e(sc)} · {e(status)}</title>
+          <style>
+          :root {{ --bg:#fff; --fg:#1f2328; --muted:#59636e; --line:#d1d9e0; --card:#f6f8fa;
+            --pass:#1a7f37; --fail:#d1242f; --warn:#9a6700; }}
+          @media (prefers-color-scheme: dark) {{ :root {{ --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1;
+            --line:#3d444d; --card:#151b23; --pass:#3fb950; --fail:#f85149; --warn:#d29922; }} }}
+          body {{ margin:0; background:var(--bg); color:var(--fg);
+            font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; }}
+          main {{ max-width:1100px; margin:0 auto; padding:24px 16px 48px; }}
+          h1 {{ font-size:22px; margin:0 0 4px; }} h2 {{ font-size:16px; margin:28px 0 8px; }}
+          .sub, .note {{ color:var(--muted); }} a {{ color:inherit; }}
+          .badge {{ display:inline-block; padding:1px 10px; border-radius:999px; font-size:13px;
+            font-weight:600; border:1px solid currentColor; white-space:nowrap; }}
+          .pass {{ color:var(--pass); }} .fail {{ color:var(--fail); }} .warn {{ color:var(--warn); }}
+          .muted {{ color:var(--muted); }}
+          .card, pre {{ background:var(--card); border:1px solid var(--line); border-radius:8px; }}
+          .card {{ padding:12px 16px; }} pre {{ padding:12px; white-space:pre-wrap; word-break:break-word; margin:0; }}
+          .scroll {{ overflow-x:auto; }} table {{ border-collapse:collapse; width:100%; font-size:14px; }}
+          th, td {{ border:1px solid var(--line); padding:8px; text-align:left; vertical-align:top; }}
+          th {{ background:var(--card); }} .quote {{ color:var(--muted); font-style:italic; }}
+          .metrics {{ display:flex; flex-wrap:wrap; gap:8px; }}
+          .metric {{ background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 12px; }}
+          .metric span {{ display:block; color:var(--muted); font-size:12px; text-transform:capitalize; }}
+          .turn {{ margin-bottom:10px; }} .role {{ font-size:12px; color:var(--muted); text-transform:uppercase; margin-bottom:4px; }}
+          </style></head><body><main>
+          <h1>{e(sc)} — {e(snap.get('title') or sc)}</h1>
+          <p class="sub"><span class="badge {tone}">{e(status)}</span>
+            {f' · {e(unverifiable.replace("_", " "))}' if unverifiable else ''}
+            {f' · feature {e(snap.get("feature_id"))}' if snap.get('feature_id') else ''}
+            {f' · {counts}' if counts else ''}
+            · Rook run <code>{e(run_id or 'none')}</code> · <a href="{e(run_url)}">GitHub run</a></p>
+          {missing}
+          {section('Summary', f"<div class='card'>{e(verdict.get('summary'))}</div>" if verdict.get('summary') else '')}
+          {section('Input', f"<pre>{e(snap.get('goal'))}</pre>" if snap.get('goal') else '')}
+          {section('Why this scenario exists', f"<div class='card'>{e(snap.get('why'))}</div>" if snap.get('why') else '')}
+          {section('Criteria', criteria)}
+          {section('Forbidden content', forbidden_html)}
+          {section('Metrics', f"<div class='metrics'>{metrics}</div>" if metrics else '')}
+          {section('Conversation', turns)}
+          </main></body></html>""")
+          PY
+      - name: Upload the scenario report
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ env.REPORT }}
+          archive: false
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+
+  evidence:
+    name: 4. Evidence summary
+    needs: [select, run, reports]
+    if: always() && needs.select.result == 'success' && needs.select.outputs.ids != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # To list this run's artifacts, which is where each report link comes from.
+      actions: read
+    steps:
+      - name: Download the run's results
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: rook-${{ github.run_id }}-${{ github.run_attempt }}
+          path: rook-results
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Publish the evidence summary
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IDS: ${{ needs.select.outputs.ids }}
+          RUN_ID: ${{ needs.run.outputs.run_id }}
+          GATE: ${{ needs.run.result }}
+          API: ${{ github.api_url }}/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts
+          ARTIFACT_BASE: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts
+          PREFIX: rook-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pyyaml==6.0.2
+          mkdir -p evidence
+          if [ -f rook-results/evidence.tar.gz ]; then tar -xzf rook-results/evidence.tar.gz -C evidence; fi
+          python - >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, os, sys, urllib.request
+          from pathlib import Path
+          import yaml
+
+          sys.stdout.reconfigure(encoding="utf-8")
+
+          env = os.environ
+          ids = [i for i in env["IDS"].split(",") if i]
+          run_id, prefix = env["RUN_ID"], env["PREFIX"]
+
+          artifacts, page = {}, 1
+          while True:
+              req = urllib.request.Request(
+                  f"{env['API']}?per_page=100&page={page}",
+                  headers={"Authorization": f"Bearer {env['GH_TOKEN']}",
+                           "Accept": "application/vnd.github+json"})
+              batch = json.load(urllib.request.urlopen(req, timeout=30)).get("artifacts", [])
+              artifacts.update({a["name"]: f"{env['ARTIFACT_BASE']}/{a['id']}" for a in batch})
+              if len(batch) < 100:
+                  break
+              page += 1
+
+          def scenario_dir(sc):
+              if not run_id:
+                  return None
+              return next(Path("evidence").glob(f"**/runs/{run_id}/scenarios/{sc}"), None)
+
+          def load_yaml(p):
+              try:
+                  return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+              except Exception:
+                  return {}
+
+          cell = lambda v: str(v).replace("|", "\\|").replace("\n", " ")
+          icon = {"Pass": "✅", "Fail": "❌", "Unable to Verify": "⚠️"}
+          gate = {"success": "✅ Rook release gate passed",
+                  "failure": "❌ Rook release gate blocked (job 2 log says why)"}.get(env["GATE"], f"Gate: {env['GATE']}")
+
+          print(f"## Rook evidence\n\n**{gate}** · Rook run `{run_id or 'none'}`\n")
+          try:
+              t = json.loads(Path("rook-results/report.json").read_text())["report"]["totals"]
+              print(f"Pass: {t['passed']} | Fail: {t['failed']} | Unable to Verify: {t['unverifiable']} | "
+                    f"Unjudged: {t['unjudged']} | Not run: {t['not_run']} | Unrunnable: {t['unrunnable']}\n")
+          except Exception:
+              pass
+          print("| Scenario | Title | Feature | Status | Criteria (pass / fail / unverified) | Report |")
+          print("| --- | --- | --- | --- | --- | --- |")
+          for sc in ids:
+              d = scenario_dir(sc)
+              snap = load_yaml(d / "snapshot.yaml") if d else {}
+              v = load_yaml(d / "verdict.yaml") if d else {}
+              status = v.get("status") or ("Not run" if not d else "Unjudged")
+              counts = (f"{v.get('pass_count', 0)} / {v.get('fail_count', 0)} / {v.get('unable_to_verify_count', 0)}"
+                        if v else "-")
+              url = artifacts.get(f"{prefix}-{sc}.html")
+              print(f"| `{sc}` | {cell(snap.get('title') or '-')} | {cell(snap.get('feature_id') or '-')} | "
+                    f"{icon.get(status, '⏺')} {status} | {counts} | {f'[open]({url})' if url else '-'} |")
+          bundle = artifacts.get(prefix)
+          if bundle:
+              print(f"\nFull evidence bundle (run.json, report.json, every scenario's files): [{prefix}]({bundle})")
+          PY
