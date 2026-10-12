@@ -49,13 +49,15 @@ PRs from forks are skipped, so outside code never runs with your secrets.
    - Variables:
      - `ROOK_PROJECT_ID`;
      - `ROOK_AGENT_ID` (the agent's folder name);
-     - `ROOK_PROFILE` (e.g. `local`);
-     - `ROOK_SCENARIO_IDS`: the scenarios to test, like `SC-004,SC-008,SC-009`.
+     - `ROOK_PROFILE` (e.g. `local`).
 
 4. **Run it** from *Actions → Rook assurance → Run workflow*, or open a pull request. A pass ends
-   with `Rook release gate passed.`
+   with `Rook release gate passed.` In the run form, **Scenarios** is `all` (every scenario
+   committed for the agent) or `selected` (only the IDs you type, like `SC-001,SC-007`). Every
+   run's summary lists the committed IDs and titles.
 
-Only list scenarios in `ROOK_SCENARIO_IDS` that pass reliably. One failure fails the check.
+One failing scenario fails the check, and a pull request picks from every committed scenario.
+So commit only scenarios that pass reliably.
 
 ## How it picks scenarios for a PR
 

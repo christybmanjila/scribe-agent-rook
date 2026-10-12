@@ -21,6 +21,20 @@ on:
     # anyone with write access to the repository can read them. For a key you keep using, set
     # it as an environment secret and leave the field blank.
     inputs:
+      # Which scenarios to run. "all" is every scenario committed for the agent; "selected"
+      # runs only the IDs typed below. Every run's summary lists the committed IDs and titles.
+      scenarios:
+        description: 'Scenarios to run: all committed ones, or only the IDs below'
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - selected
+      scenario_ids:
+        description: 'With "selected": the scenario IDs, comma-separated, e.g. SC-001,SC-007'
+        required: false
+        type: string
       rook_env:
         description: 'Rook servers: prod or stage (blank = environment setting, else prod)'
         required: false
@@ -35,10 +49,6 @@ on:
         type: string
       rook_profile:
         description: 'ROOK_PROFILE (blank = environment variable)'
-        required: false
-        type: string
-      rook_scenario_ids:
-        description: 'ROOK_SCENARIO_IDS, comma-separated, no spaces (blank = environment variable)'
         required: false
         type: string
       rook_allow_rules:
@@ -116,7 +126,9 @@ jobs:
     timeout-minutes: 10
     environment: rook-assurance
     env:
-      ROOK_SCENARIO_IDS: ${{ inputs.rook_scenario_ids || vars.ROOK_SCENARIO_IDS }}
+      # Where the committed suite lives: the run form's value, else the environment variable.
+      ROOK_PROJECT_ID: ${{ inputs.rook_project_id || vars.ROOK_PROJECT_ID }}
+      ROOK_AGENT_ID: ${{ inputs.rook_agent_id || vars.ROOK_AGENT_ID }}
     outputs:
       ids: ${{ steps.select.outputs.ids }}
       mode: ${{ steps.select.outputs.mode }}
@@ -130,24 +142,111 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
-      # A PR runs only the gated scenarios whose features its diff touches (Rook's feature
-      # `sources` plus ci/scenario-map.json; anything unmapped runs them all). Manual runs
-      # and nightly runs run the whole gate list.
+      # The pool is every scenario committed for the agent. A manual run takes all of them or
+      # the IDs picked in the run form; a nightly run takes all of them. A PR runs only the
+      # scenarios whose features its diff touches (Rook's feature `sources` plus
+      # ci/scenario-map.json; anything unmapped runs the whole pool).
       - name: Select scenarios
         id: select
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHOICE: ${{ inputs.scenarios || 'all' }}
+          TYPED: ${{ inputs.scenario_ids }}
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            node ci/select-scenarios.mjs --base "$BASE_SHA" --head "$HEAD_SHA"
-          else
-            printf 'ids=%s\nmode=all\n' "$ROOK_SCENARIO_IDS" >> "$GITHUB_OUTPUT"
-            printf '### Rook scenario selection: all\n\n%s run: the whole gate list `%s`.\n' \
-              "$GITHUB_EVENT_NAME" "$ROOK_SCENARIO_IDS" >> "$GITHUB_STEP_SUMMARY"
+          # id <TAB> feature <TAB> title for each committed scenario, in ID order.
+          node --input-type=module - > "$RUNNER_TEMP/scenarios.tsv" <<'JS' || { cat "$RUNNER_TEMP/scenarios.tsv"; exit 1; }
+          import { existsSync, readdirSync, readFileSync } from "node:fs";
+          import { join } from "node:path";
+          const { ROOK_PROJECT_ID: project, ROOK_AGENT_ID: agent } = process.env;
+          const fail = (message) => {
+            process.stdout.write(`::error title=Scenario selection::${message}\n`);
+            process.exit(1);
+          };
+          if (!project || !agent) fail("ROOK_PROJECT_ID and ROOK_AGENT_ID are required (run form or environment variables)");
+          const root = ".testmuai/rook/projects";
+          const found = existsSync(root) ? readdirSync(root).filter((d) => d === project || d.endsWith(`--${project}`)) : [];
+          if (found.length !== 1) fail(`Expected exactly one committed project folder for ${project}, found ${found.length}`);
+          const dir = join(root, found[0], "agents", agent, "scenarios");
+          if (!existsSync(dir)) fail(`No committed scenarios for agent ${agent}: ${dir}`);
+          // A top-level scalar, plain or folded (>- / |) onto the indented lines below it.
+          const field = (text, key) => {
+            const m = text.match(new RegExp(`^${key}:[ \\t]*(.*)\\n((?:[ \\t]+.*\\n?)*)`, "m"));
+            if (!m) return "";
+            const value = /^[>|]/.test(m[1]) ? m[2].split("\n").map((l) => l.trim()).filter(Boolean).join(" ") : m[1];
+            return value.trim().replace(/^['"]|['"]$/g, "").replace(/\s+/g, " ");
+          };
+          const rows = readdirSync(dir).filter((f) => f.endsWith(".yaml")).map((f) => {
+            const text = readFileSync(join(dir, f), "utf8");
+            return [field(text, "local_id") || f.replace(/\.yaml$/, ""), field(text, "feature_id"), field(text, "title")];
+          });
+          rows.sort((a, b) => a[0].localeCompare(b[0], "en", { numeric: true }));
+          for (const row of rows) process.stdout.write(`${row.join("\t")}\n`);
+          JS
+          declare -A canonical=()
+          order=()
+          while IFS=$'\t' read -r id _; do canonical[${id^^}]=$id; order+=("$id"); done < "$RUNNER_TEMP/scenarios.tsv"
+          if [ "${#order[@]}" -eq 0 ]; then
+            echo "::error title=Scenario selection::No scenarios are committed for agent $ROOK_AGENT_ID"; exit 1
           fi
+          all_ids=$(IFS=,; echo "${order[*]}")
+
+          # The committed scenarios, with the ones this run takes ticked: the list to pick from.
+          scenario_table() {
+            local chosen=",${1:-},"
+            {
+              echo
+              echo "#### Scenarios committed for \`$ROOK_AGENT_ID\` (${#order[@]})"
+              echo
+              echo '| Scenario | Feature | Title | In this run |'
+              echo '| --- | --- | --- | --- |'
+              while IFS=$'\t' read -r id feature title; do
+                case "$chosen" in *",$id,"*) mark='✅' ;; *) mark='' ;; esac
+                printf '| `%s` | %s | %s | %s |\n' "$id" "${feature:--}" "${title//|/\\|}" "$mark"
+              done < "$RUNNER_TEMP/scenarios.tsv"
+              echo
+              echo 'To run only some: **Run workflow → Scenarios: selected**, then type their IDs, e.g. `SC-001,SC-007`.'
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+          fail() { echo "::error title=Scenario selection::$1"; scenario_table ""; exit 1; }
+
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            ids=$(ROOK_SCENARIO_IDS="$all_ids" node ci/select-scenarios.mjs --base "$BASE_SHA" --head "$HEAD_SHA")
+          else
+            typed=$(printf '%s' "$TYPED" | tr -d '[:space:]')
+            case "$CHOICE" in
+              all)
+                if [ -n "$typed" ]; then
+                  fail "Scenario IDs were typed ($typed) but Scenarios is 'all'. Choose 'selected' to run only those, or clear the field."
+                fi
+                ids=$all_ids why="every committed scenario (${#order[@]})"
+                ;;
+              selected)
+                [ -n "$typed" ] || fail "Scenarios is 'selected' but no scenario IDs were typed."
+                picked=() unknown=()
+                declare -A seen=()
+                IFS=, read -ra wanted <<< "$typed"
+                for want in "${wanted[@]}"; do
+                  [ -n "$want" ] || continue
+                  id=""
+                  if [[ "$want" =~ ^[A-Za-z0-9_-]+$ ]]; then id=${canonical[${want^^}]:-}; fi
+                  if [ -z "$id" ]; then unknown+=("$want")
+                  elif [ -z "${seen[$id]:-}" ]; then seen[$id]=1; picked+=("$id"); fi
+                done
+                if [ "${#unknown[@]}" -gt 0 ]; then
+                  fail "Not committed for $ROOK_AGENT_ID: ${unknown[*]}. Pick IDs from the table in the run summary."
+                fi
+                ids=$(IFS=,; echo "${picked[*]}") why="${#picked[@]} of ${#order[@]} committed scenarios, picked in the run form"
+                ;;
+              *) fail "Unknown Scenarios choice: $CHOICE" ;;
+            esac
+            printf 'ids=%s\nmode=%s\n' "$ids" "$CHOICE" >> "$GITHUB_OUTPUT"
+            printf '### Rook scenario selection: %s\n\n%s run: %s: `%s`.\n' \
+              "$CHOICE" "$GITHUB_EVENT_NAME" "$why" "$ids" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          scenario_table "$ids"
       # The same selection as a JSON list, for the per-scenario report jobs.
       - name: Prepare the scenario report matrix
         id: matrix
@@ -162,7 +261,7 @@ jobs:
   run:
     name: 2. Run reviewed suite
     needs: select
-    # Nothing selected (the change touches no gated scenario's feature): pass without a run.
+    # Nothing selected (the change touches no scenario's feature): pass without a run.
     if: needs.select.outputs.ids != ''
     runs-on: ubuntu-24.04
     # One scenario at a time, and a single execute can take up to ~50 s on the configured model.
@@ -177,7 +276,6 @@ jobs:
       ROOK_PROJECT_ID: ${{ inputs.rook_project_id || vars.ROOK_PROJECT_ID }}
       ROOK_AGENT_ID: ${{ inputs.rook_agent_id || vars.ROOK_AGENT_ID }}
       ROOK_PROFILE: ${{ inputs.rook_profile || vars.ROOK_PROFILE }}
-      ROOK_SCENARIO_IDS: ${{ inputs.rook_scenario_ids || vars.ROOK_SCENARIO_IDS }}
       ROOK_ALLOW_RULES: ${{ inputs.rook_allow_rules || vars.ROOK_ALLOW_RULES }}
       ROOK_CONCURRENCY: ${{ inputs.rook_concurrency || vars.ROOK_CONCURRENCY }}
       # The agent's own model configuration (its .env locally).
@@ -238,7 +336,7 @@ jobs:
             echo "| \`$name\` | $source | *** |" >> "$GITHUB_STEP_SUMMARY"
           done
           for pair in rook_env:ROOK_ENV rook_project_id:ROOK_PROJECT_ID rook_agent_id:ROOK_AGENT_ID \
-            rook_profile:ROOK_PROFILE rook_scenario_ids:ROOK_SCENARIO_IDS rook_allow_rules:ROOK_ALLOW_RULES \
+            rook_profile:ROOK_PROFILE rook_allow_rules:ROOK_ALLOW_RULES \
             rook_concurrency:ROOK_CONCURRENCY llm_provider:LLM_PROVIDER \
             anthropic_base_url:ANTHROPIC_BASE_URL glm_model:GLM_MODEL; do
             key=${pair%%:*} name=${pair#*:}
@@ -267,7 +365,7 @@ jobs:
       - name: Run the reviewed suite
         shell: bash
         env:
-          # The selection, not the whole gate list.
+          # What job 1 selected.
           ROOK_SCENARIO_IDS: ${{ needs.select.outputs.ids }}
         run: bash ci/rook-ci.sh
       # Read back for the report jobs; empty when Rook never got as far as a run.
