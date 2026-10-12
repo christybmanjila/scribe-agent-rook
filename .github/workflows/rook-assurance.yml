@@ -14,6 +14,7 @@ on:
     # Every field is optional. Leave one blank to use the value configured on the
     # rook-assurance environment (Settings -> Environments); fill it in to override it for this
     # run only. Pull-request runs always use the environment values.
+    # .env.example lists every field, what it is for, and where it comes from.
     #
     # Secret fields: GitHub does not treat dispatch inputs as secrets. The job masks them in the
     # log before anything can print them, but they are still stored with the run's event, so
