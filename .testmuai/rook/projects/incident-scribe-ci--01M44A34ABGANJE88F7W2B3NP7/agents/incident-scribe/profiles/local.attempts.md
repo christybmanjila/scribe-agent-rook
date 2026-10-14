@@ -1,10 +1,14 @@
 # local — what was tried
 
-## 2026-10-04T20:45:08.715Z
+## 2026-10-14T11:17:12.333Z
 
-The incident-scribe execute command produced no answer within the 120-second stuck threshold.
+author_profile: [request a7fafa58-1649-4180-a0b7-7db7e359b9ac] Server message: "service unavailable"
 
-Next: rook profile test local
+(62.20 credits)
 
-(349.64 credits)
+## 2026-10-14T11:20:31.117Z
+
+verified — scripts/local.mjs
+
+(212.84 credits)
 

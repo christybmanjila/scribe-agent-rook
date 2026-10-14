@@ -1,34 +1,43 @@
 local_id: F-001
-name: Draft a concise customer status note from supplied facts
+name: Assess a registered incident using directory facts and policy severity
 user_story: >-
-  As incident-scribe, I provide a structured facts object containing assessment, service, tier,
-  owning_team, runbook_url, and on_call, so that comms-writer returns a concise public status note
-  for customers.
+  As an incident reporter, I submit a plain-language incident report through execute, so that the
+  desk verifies the affected service and history, applies the appropriate S1/S2/S3 policy row, and
+  produces a completed assessment and customer note.
 expected_behaviour: >-
-  When given the structured facts object from incident-scribe, produce a short customer-facing
-  status note describing what is affected, how severe it is in plain language, and what happens
-  next. The note is generated through the parent's llm.call hand-off and is limited to 1500 output
-  tokens for the initial subagent call.
+  Given a report for a registered service, the desk looks up the service, obtains relevant incident
+  history, assigns the matching S1/S2/S3 policy severity, delegates a three- or four-sentence
+  customer-facing status note to comms-writer, and returns one completed JSON result containing the
+  assessment, severity, service fields, call records, metrics, image URLs, and paths to the
+  customer-note and incident-record artifacts.
 edge_cases:
-  - The note may contain either three or four sentences.
-  - If a fact is absent from the input, it must not appear in the note.
-  - The subagent has no tools and cannot independently resolve missing information.
-validation_rules:
-  - The output is three or four sentences.
-  - The note describes the affected subject, severity in plain language, and next steps.
-  - The note is based on the supplied facts object rather than a lookup.
-assumptions:
-  - The parent supplies a valid structured JSON facts object containing the stated fields.
-  - The model provider behind llm.call is selected by the parent process.
-sources:
-  - 'incident_scribe/agent.py: COMMS_SYSTEM'
   - >-
-    incident_scribe/agent.py: run_turn llm.call([llm.system(COMMS_SYSTEM), llm.user(facts_json)],
-    max_output_tokens=1500)
-  - 'README.md: The subagent'
+    The service must be registered before ownership, tier, contact, or image metadata can be
+    reported.
+  - >-
+    Follow-up turns may reuse the session transcript, but the current-task attribution requirement
+    may require a fresh directory lookup.
+  - Incident history can be retrieved for the reported service and searched by symptom.
+validation_rules:
+  - Do not state an owning team, tier, or on-call address unless obtained from lookup_service.
+  - Use the stated S1/S2/S3 severity matrix and identify the matching row.
+  - Do not invent ownership or tier for an unregistered service.
+calls:
+  - ops-directory
+  - configured model endpoint (BASE_URL)
+  - comms-writer
+  - session filesystem (.scribe-sessions)
+assumptions:
+  - The caller provides a plain-language incident report through the execute conversation interface.
+  - The configured model endpoint and ops-directory MCP server are available.
+sources:
+  - incident_scribe/agent.py:run_turn
+  - incident_scribe/agent.py:COMMS_SYSTEM
+  - incident_scribe/mcp.py:OpsDirectory.call
+  - services/ops-directory.mjs
+  - docs/incident-policy.pdf
 known_data:
-  - 3 sentences
-  - 4 sentences
-  - 1500 output tokens
-calls: []
+  - S1
+  - S2
+  - S3
 confidence: null
