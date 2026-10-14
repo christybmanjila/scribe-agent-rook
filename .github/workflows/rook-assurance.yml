@@ -44,11 +44,11 @@ on:
         required: false
         type: string
       rook_agent_id:
-        description: 'ROOK_AGENT_ID (blank = environment variable)'
+        description: 'ROOK_AGENT_ID (blank = environment variable, else incident-scribe)'
         required: false
         type: string
       rook_profile:
-        description: 'ROOK_PROFILE (blank = environment variable)'
+        description: 'ROOK_PROFILE (blank = environment variable, else local)'
         required: false
         type: string
       rook_allow_rules:
@@ -128,7 +128,7 @@ jobs:
     env:
       # Where the committed suite lives: the run form's value, else the environment variable.
       ROOK_PROJECT_ID: ${{ inputs.rook_project_id || vars.ROOK_PROJECT_ID }}
-      ROOK_AGENT_ID: ${{ inputs.rook_agent_id || vars.ROOK_AGENT_ID }}
+      ROOK_AGENT_ID: ${{ inputs.rook_agent_id || vars.ROOK_AGENT_ID || 'incident-scribe' }}
     outputs:
       ids: ${{ steps.select.outputs.ids }}
       mode: ${{ steps.select.outputs.mode }}
@@ -274,8 +274,8 @@ jobs:
       # there; set ROOK_ENV=stage only once CI has stage access or runs on a VPN runner.
       ROOK_ENV: ${{ inputs.rook_env || vars.ROOK_ENV || 'prod' }}
       ROOK_PROJECT_ID: ${{ inputs.rook_project_id || vars.ROOK_PROJECT_ID }}
-      ROOK_AGENT_ID: ${{ inputs.rook_agent_id || vars.ROOK_AGENT_ID }}
-      ROOK_PROFILE: ${{ inputs.rook_profile || vars.ROOK_PROFILE }}
+      ROOK_AGENT_ID: ${{ inputs.rook_agent_id || vars.ROOK_AGENT_ID || 'incident-scribe' }}
+      ROOK_PROFILE: ${{ inputs.rook_profile || vars.ROOK_PROFILE || 'local' }}
       ROOK_ALLOW_RULES: ${{ inputs.rook_allow_rules || vars.ROOK_ALLOW_RULES }}
       ROOK_CONCURRENCY: ${{ inputs.rook_concurrency || vars.ROOK_CONCURRENCY }}
       # The agent's own model configuration (its .env locally).
@@ -348,7 +348,7 @@ jobs:
             if [ -n "$(jq -r --arg k "$key" '.inputs[$k] // empty' "$GITHUB_EVENT_PATH")" ]; then
               source='run form'
             elif [ -n "${!name}" ]; then
-              source='environment variable'
+              source='environment variable or default'
             else
               source='not set'
             fi
