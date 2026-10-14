@@ -156,9 +156,9 @@ box. `npm install` is only for the optional semantic search (see
 
 ### 3. A model provider key
 
-The desk calls a model, so it needs one provider's endpoint, key and model
-name. Any one of the four supported providers is enough; the variables for
-each are listed under [Configuration](#configuration).
+The desk calls a model, so it needs a base URL, an API key and a model name:
+`BASE_URL`, `LLM_API_KEY` and `LLM_MODEL`, whichever provider you use. See
+[Configuration](#configuration).
 
 ### 4. A `.env` file with the token and the provider settings
 
@@ -167,15 +167,16 @@ so create it in this directory, next to this README. The desk loads it
 itself.
 
 ```bash
-# .env — example using Gemini. Swap the provider block for the one you use.
-SCRIBE_API_TOKEN=choose-any-secret-string
+# .env — the same three model settings work for any provider.
+SCRIBE_API_TOKEN=scribe-demo-token-2026
 
-LLM_PROVIDER=gemini
-GEMINI_API_KEY=your-key-here
-GEMINI_MODEL=your-model-name
+BASE_URL=https://api.z.ai/api/anthropic
+LLM_API_KEY=your-key-here
+LLM_MODEL=your-model-name
+# LLM_PROVIDER=gemini      # only for a non-Anthropic-compatible API: gemini, openai, responses
 ```
 
-`SCRIBE_API_TOKEN` is a shared secret you pick yourself. The desk compares
+`SCRIBE_API_TOKEN` is a shared secret, preset to `scribe-demo-token-2026`. The desk compares
 the `--token` on every command with this value and refuses anything else.
 
 **Also export the token in your shell.** The commands in
@@ -185,11 +186,11 @@ only in `.env`, the shell passes an empty token and the command is refused as
 `unauthorized`.
 
 ```bash
-export SCRIBE_API_TOKEN=choose-any-secret-string        # macOS / Linux / WSL
+export SCRIBE_API_TOKEN=scribe-demo-token-2026        # macOS / Linux / WSL
 ```
 
 ```powershell
-$env:SCRIBE_API_TOKEN = "choose-any-secret-string"      # Windows PowerShell
+$env:SCRIBE_API_TOKEN = "scribe-demo-token-2026"      # Windows PowerShell
 ```
 
 Use the same value in both places.
@@ -222,20 +223,18 @@ variables win over `.env`.
 | variable | role |
 | --- | --- |
 | `SCRIBE_API_TOKEN` | **required**: the credential checked on every command |
-| `LLM_PROVIDER` | `anthropic`/`glm` · `gemini` · `responses` · `openai`/`chat`. If unset, auto-detected in that order from the variables present |
+| `BASE_URL` | the model API's base URL (default `https://api.z.ai/api/anthropic`) |
+| `LLM_API_KEY` | **required**: the model API key |
+| `LLM_MODEL` | **required**: the model name |
+| `LLM_PROVIDER` | only for a non-Anthropic-compatible API: `gemini`, `openai` (Chat Completions) or `responses`. Blank = Anthropic-compatible |
 | `SCRIBE_STATE_DIR` | session storage root (default `.scribe-sessions/`) |
 | `OPS_LEARNED_FILE` | learned-incidents file (default `services/incidents.learned.json`) |
 | `MCP_TIMEOUT` | per-call timeout to ops-directory, seconds (default 30) |
 | `LLM_TIMEOUT` / `LLM_RETRIES` | model request timeout in seconds (default 120) and retries (default 1) |
 
-Per provider:
-
-| provider | variables |
-| --- | --- |
-| `anthropic` / `glm` | `ANTHROPIC_BASE_URL` (default `https://api.z.ai/api/anthropic`); key from `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `GLM_API_KEY` or `ZAI_API_KEY`; model from `ANTHROPIC_MODEL`, `GLM_MODEL` or `ANTHROPIC_DEFAULT_{SONNET,OPUS,HAIKU}_MODEL` (a `[1m]` suffix is stripped) |
-| `gemini` | `GEMINI_API_KEY`, `GEMINI_MODEL`; optional `GEMINI_ENDPOINT` |
-| `responses` | `OPENAI_ENDPOINT`, `OPENAI_INDIA_API_KEY`, `OPENAI_MODEL` |
-| `openai` / `chat` | `OPENAI_API_KEY` (or `OPENAI_INDIA_API_KEY`), `OPENAI_CHAT_MODEL` (or `OPENAI_MODEL`); optional `OPENAI_CHAT_ENDPOINT` / `OPENAI_BASE_URL` |
+The older provider-specific names (`ANTHROPIC_BASE_URL`, `GLM_API_KEY`, `GLM_MODEL`,
+`GEMINI_API_KEY`, `OPENAI_API_KEY` and so on) are still read when the three settings above are
+blank.
 
 ## Project layout
 

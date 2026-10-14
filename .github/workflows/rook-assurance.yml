@@ -59,16 +59,16 @@ on:
         description: 'ROOK_CONCURRENCY (blank = environment variable, else 1)'
         required: false
         type: string
+      base_url:
+        description: 'BASE_URL of the model API (blank = environment variable, else Z.AI)'
+        required: false
+        type: string
+      llm_model:
+        description: 'LLM_MODEL (blank = environment variable)'
+        required: false
+        type: string
       llm_provider:
-        description: 'LLM_PROVIDER (blank = environment variable)'
-        required: false
-        type: string
-      anthropic_base_url:
-        description: 'ANTHROPIC_BASE_URL (blank = environment variable)'
-        required: false
-        type: string
-      glm_model:
-        description: 'GLM_MODEL (blank = environment variable)'
+        description: 'LLM_PROVIDER: only gemini, openai or responses (blank = Anthropic-compatible)'
         required: false
         type: string
       lt_username:
@@ -80,11 +80,11 @@ on:
         required: false
         type: string
       scribe_api_token:
-        description: 'Secret SCRIBE_API_TOKEN (blank = environment secret)'
+        description: 'Secret SCRIBE_API_TOKEN (blank = environment secret, else scribe-demo-token-2026)'
         required: false
         type: string
-      glm_api_key:
-        description: 'Secret GLM_API_KEY (blank = environment secret)'
+      llm_api_key:
+        description: 'Secret LLM_API_KEY: the model API key (blank = environment secret)'
         required: false
         type: string
   # Nightly full run on main (off in this demo to save credits). It catches regressions a
@@ -279,9 +279,10 @@ jobs:
       ROOK_ALLOW_RULES: ${{ inputs.rook_allow_rules || vars.ROOK_ALLOW_RULES }}
       ROOK_CONCURRENCY: ${{ inputs.rook_concurrency || vars.ROOK_CONCURRENCY }}
       # The agent's own model configuration (its .env locally).
+      # The same three settings for any provider; the older GLM variable names still work.
+      BASE_URL: ${{ inputs.base_url || vars.BASE_URL || vars.ANTHROPIC_BASE_URL }}
+      LLM_MODEL: ${{ inputs.llm_model || vars.LLM_MODEL || vars.GLM_MODEL }}
       LLM_PROVIDER: ${{ inputs.llm_provider || vars.LLM_PROVIDER }}
-      ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url || vars.ANTHROPIC_BASE_URL }}
-      GLM_MODEL: ${{ inputs.glm_model || vars.GLM_MODEL }}
       # Dashboard label: github-pr12-<run>-<attempt> for a PR, github-<run>-<attempt> otherwise.
       ROOK_RUN_NAME: github-${{ github.event.pull_request.number && format('pr{0}-', github.event.pull_request.number) || '' }}${{ github.run_id }}-${{ github.run_attempt }}
     outputs:
@@ -307,7 +308,7 @@ jobs:
           ENV_LT_ACCESS_KEY: ${{ secrets.LT_ACCESS_KEY }}
           # The profile's declared variable.
           ENV_SCRIBE_API_TOKEN: ${{ secrets.SCRIBE_API_TOKEN }}
-          ENV_GLM_API_KEY: ${{ secrets.GLM_API_KEY }}
+          ENV_LLM_API_KEY: ${{ secrets.LLM_API_KEY || secrets.GLM_API_KEY }}
         run: |
           set -euo pipefail
           {
@@ -316,7 +317,7 @@ jobs:
             echo '| Setting | Source | Value |'
             echo '| --- | --- | --- |'
           } >> "$GITHUB_STEP_SUMMARY"
-          for name in LT_USERNAME LT_ACCESS_KEY SCRIBE_API_TOKEN GLM_API_KEY; do
+          for name in LT_USERNAME LT_ACCESS_KEY SCRIBE_API_TOKEN LLM_API_KEY; do
             key=$(printf '%s' "$name" | tr 'A-Z' 'a-z')
             typed=$(jq -r --arg k "$key" '.inputs[$k] // empty' "$GITHUB_EVENT_PATH" | tr -d '\r' \
               | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
@@ -326,6 +327,10 @@ jobs:
               value=$typed source='run form'
             else
               value=${!fallback} source='environment secret'
+            fi
+            # The desk's token is a fixed demo value (.env.example), not a real credential.
+            if [ -z "$value" ] && [ "$name" = SCRIBE_API_TOKEN ]; then
+              value=scribe-demo-token-2026 source='default (.env.example)'
             fi
             if [ -z "$value" ]; then source='not set'; fi
             if [ -n "$value" ]; then
@@ -338,7 +343,7 @@ jobs:
           for pair in rook_env:ROOK_ENV rook_project_id:ROOK_PROJECT_ID rook_agent_id:ROOK_AGENT_ID \
             rook_profile:ROOK_PROFILE rook_allow_rules:ROOK_ALLOW_RULES \
             rook_concurrency:ROOK_CONCURRENCY llm_provider:LLM_PROVIDER \
-            anthropic_base_url:ANTHROPIC_BASE_URL glm_model:GLM_MODEL; do
+            base_url:BASE_URL llm_model:LLM_MODEL; do
             key=${pair%%:*} name=${pair#*:}
             if [ -n "$(jq -r --arg k "$key" '.inputs[$k] // empty' "$GITHUB_EVENT_PATH")" ]; then
               source='run form'
