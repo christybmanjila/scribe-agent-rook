@@ -1,30 +1,26 @@
 local_id: F-004
-name: Compare against prior incidents
+name: Index a completed incident when its session closes
 user_story: >-
-  As an incident reporter, I submit a service incident with a symptom, so that the desk considers
-  the service's prior incidents and similar recorded incidents in its assessment.
+  As an incident desk operator, I close a session after a completed incident assessment, so that
+  incident-scribe indexes the completed record in the operations directory's learned corpus.
 expected_behaviour: >-
-  The desk consults recorded incident history while assessing a named service, using
-  recent_incidents for the service's filing history and search_incidents when the report symptom can
-  be compared with prior incidents.
+  When a session containing a completed incident record is closed, the agent sends the
+  record—including service, severity, summary, symptoms, session id, and date—to ops-directory for
+  indexing and returns the indexing result and corpus metadata.
 edge_cases:
-  - Prior-history retrieval is for a named service.
-  - Symptom comparison may use a service filter and an optional incident limit.
-  - Search results are returned in relevance order; recent incidents are newest first.
+  - A needs_input turn must not create an assessment artifact to index.
+  - Only a completed record is eligible for indexing.
+  - Indexing occurs when the caller closes the session, not during execute.
 validation_rules:
-  - recent_incidents receives a service name and optional incident limit.
-  - search_incidents receives a symptom query, optional service filter, and optional incident limit.
+  - Only index a completed record when closing a session.
+  - Do not index a needs_input turn.
 calls:
   - ops-directory
-  - configured LLM provider
 assumptions:
-  - >-
-    The report names a service or contains a symptom suitable for comparison with recorded
-    incidents.
+  - The caller closes the session after a completed assessment.
+  - The completed record contains the fields required by index_incident.
 sources:
-  - incident_scribe/agent.py:run_turn
-  - incident_scribe/agent.py:_ops_call
-  - services/ops-directory.mjs:OPERATIONS.recent_incidents
-  - services/ops-directory.mjs:OPERATIONS.search_incidents
+  - incident_scribe/__main__.py:_index_latest_record
+  - services/ops-directory.mjs:OPERATIONS.index_incident
 confidence: null
 known_data: []

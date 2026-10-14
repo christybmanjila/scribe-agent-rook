@@ -1,10 +1,31 @@
+- severity: high
+  what: >-
+    A session's prior service record is reused when a new turn does not perform a fresh lookup, so
+    the desk can attribute a new incident to stale team, tier, on-call, and service data.
+  where: incident_scribe/agent.py:run_turn; state.json service_record handling
+  why: >-
+    This contradicts the authoritative attribution rule that directory values must be read during
+    the current task and can produce an incorrect severity or owner, especially when an unknown or
+    different service is reported in a follow-up turn.
+  id: FI-001
 - severity: medium
   what: >-
-    The customer-boundary rules rely primarily on the model prompt, and the post-generation cleaner
-    does not remove team names, internal jargon, or arbitrary internal hostnames outside its
-    .internal pattern.
-  where: 'incident_scribe/agent.py: COMMS_SYSTEM and _clean_note'
+    The deterministic severity cross-check only rejects a model severity when a narrow keyword rule
+    produces an expected row; it accepts unsupported model-assigned severities when the report has
+    no recognized cue.
+  where: incident_scribe/agent.py:_policy_severity and run_turn
   why: >-
-    A note can still expose internal routing information even though the authoritative policy
-    prohibits internal hostnames and the subagent is instructed not to include team names.
-  id: FI-001
+    A report that is unplaceable under the matrix can still return completed if the model supplies a
+    severity, contrary to the rule that unplaceable reports must receive a question rather than an
+    invented severity.
+  id: FI-002
+- severity: medium
+  what: >-
+    Customer-note sanitization removes the known on-call address, URLs, matching internal-hostname
+    patterns, and S1-S3 codes, but does not generically remove other internal email addresses or
+    team names that the model may generate.
+  where: incident_scribe/agent.py:_clean_note and COMMS_SYSTEM
+  why: >-
+    The prompt-level boundary can be bypassed by a hallucinated or differently formatted internal
+    contact, and the stated no-team-names rule is not enforced after generation.
+  id: FI-003

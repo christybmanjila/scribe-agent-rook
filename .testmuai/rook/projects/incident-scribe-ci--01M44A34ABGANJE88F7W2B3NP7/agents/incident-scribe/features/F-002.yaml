@@ -1,29 +1,30 @@
 local_id: F-002
-name: Verify the affected service
+name: Request symptom and impact for an unplaceable incident
 user_story: >-
-  As an incident reporter, I submit a message naming the affected service and its symptom, so that
-  the desk verifies the service against the operations directory before attributing ownership or
-  support details.
+  As an incident reporter, I submit incident report text through the conversation execute interface
+  that lacks a placeable symptom or impact, so that incident-scribe asks me for the missing
+  information rather than completing an unsupported assessment.
 expected_behaviour: >-
-  For a report naming a service, the desk uses lookup_service before stating the service owner,
-  tier, or on-call address, and incorporates the returned service facts into the assessment. The
-  lookup returns the service record or found:false.
+  When the incident cannot be placed under the severity policy, the agent returns a needs_input
+  result and asks for a symptom and impact instead of producing an assessment or customer-note
+  artifacts.
 edge_cases:
-  - An unregistered service produces a lookup result with found:false.
-  - The desk must not state owner, tier, or on-call attribution without a successful current lookup.
+  - Reports with no placeable symptom or impact must request more information.
+  - >-
+    The current implementation may accept a model-supplied severity even when policy_severity is
+    null, contrary to the documented policy.
+  - No assessment artifacts should be created for this turn.
 validation_rules:
-  - Owner, tier, and on-call address may only be stated after lookup_service supplies them.
-  - The lookup passes the service name.
+  - A needs_input response must ask for a symptom and impact.
+  - Do not create assessment artifacts for a needs_input turn.
 calls:
+  - configured LLM endpoint
   - ops-directory
-  - configured LLM provider
 assumptions:
-  - The service named by the incident is registered in the operations directory.
-  - The model selects the service lookup argument from the report.
+  - The report may contain enough symptom and impact information for policy placement.
 sources:
   - incident_scribe/agent.py:run_turn
-  - incident_scribe/agent.py:_ops_call
-  - services/ops-directory.mjs:OPERATIONS.lookup_service
-  - docs/incident-policy.pdf
+  - docs/incident-policy.pdf section 4
+known_data:
+  - needs_input
 confidence: null
-known_data: []
