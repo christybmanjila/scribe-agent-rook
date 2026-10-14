@@ -224,6 +224,63 @@ def test_policy_guard_runs_on_the_report(tmp_path, monkeypatch):
         s.log("session_closed")
 
 
+def test_follow_up_turn_keeps_its_answer(tmp_path, monkeypatch):
+    """A follow-up turn that assesses nothing new (no lookup, a service record
+    already established) must not be replaced by the canned severity question:
+    that turned every multi-turn conversation into the same reply, repeated.
+    A turn that does assess a report still has to state a severity."""
+    import incident_scribe.llm as llm_mod
+    from incident_scribe import __main__ as cli_mod
+    from incident_scribe import agent
+
+    reply = "STATUS: COMPLETE\n\nHere is the customer note reworded more plainly."
+
+    def fake_llm_call(items, tools=None, max_output_tokens=None):
+        return {
+            "text": reply,
+            "tool_calls": [],
+            "raw_output": [{"role": "assistant", "content": [{"type": "output_text", "text": reply}]}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    monkeypatch.setattr(llm_mod, "call", fake_llm_call)
+    monkeypatch.setattr(cli_mod, "SESSION_ROOT", tmp_path / "sessions")
+    record = {"name": "checkout-api", "tier": 1, "owning_team": "payments", "runbook_url": "https://runbooks.internal/ca", "on_call": "ca-oncall@x"}
+
+    s = cli_mod.Session("follow-up-test")
+    s.open()
+    try:
+        s.write_json("state.json", {"service_record": record, "severity": "S1", "status": "completed"})
+        result = agent.run_turn(s, "Please reword the customer note more plainly.")
+        assert result["status"] == "completed", result["answer"][:200]
+        assert "reworded" in result["answer"]
+        assert result["severity"] == "S1"
+    finally:
+        s.log("session_closed")
+
+    # The first turn of a session assesses a report: no SEVERITY line is still refused.
+    first = cli_mod.Session("first-turn-test")
+    first.open()
+    try:
+        monkeypatch.setattr(agent, "_ops_call", lambda name, args: dict(record, found=True))
+
+        calls = []
+
+        def fake_lookup_then_reply(items, tools=None, max_output_tokens=None):
+            calls.append(1)
+            if len(calls) == 1:
+                return {"text": "", "tool_calls": [{"name": "lookup_service", "arguments": {"name": "checkout-api"}, "call_id": "c1"}],
+                        "raw_output": [], "usage": {"input_tokens": 1, "output_tokens": 1}}
+            return fake_llm_call(items, tools, max_output_tokens)
+
+        monkeypatch.setattr(llm_mod, "call", fake_lookup_then_reply)
+        result = agent.run_turn(first, "checkout-api is down for all customers")
+        assert result["status"] == "needs_input"
+        assert result["severity"] is None
+    finally:
+        first.log("session_closed")
+
+
 def test_policy_guards():
     assert _status("STATUS: NEEDS_INPUT\nWhat service?") == "needs_input"
     assert _status("STATUS: COMPLETE\nS2") == "completed"

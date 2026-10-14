@@ -181,7 +181,9 @@ Every command prints **one JSON object on stdout**. Diagnostics go to stderr.
 An incomplete report returns `"status": "needs_input"` and a question. It
 does not call the comms writer or create artifacts. A completed turn returns
 `"status": "completed"`; repeated turns use the same session transcript and
-write uniquely numbered artifact files.
+write uniquely numbered artifact files. A follow-up turn that reports nothing
+new (rewording the note, a question about it) keeps the severity the session
+already established and returns `completed` with a revised note.
 
 - **`answer` is what the desk said** — the assessment followed by the customer
   note. This is the text a person would read.
@@ -232,6 +234,47 @@ for a task `execute` has already done, not a new result.
 `logs` is the evidence trail: what the desk did, in order, with the artifact
 paths. It is written as the session runs, not at the end, so a session that
 died still says how far it got.
+
+## Driving it from a test harness
+
+How a harness (a rook profile, a script) should call the desk so that every
+scenario can be graded on what the desk did, not on how it was called.
+
+**One session per scenario, one `execute` per user turn.** `open` once with a
+fresh `--session-id`, then send each user message as its own `execute` on that
+same id, then `close` once at the end, then `logs`. Do not open a new session
+for a later turn — the desk's memory of the service and the severity lives in
+the session — and do not `close` between turns.
+
+**`needs_input` is a question, not a failure.** The desk asks one question and
+stops. The next user message answers it with another `execute` on the same
+session. A scenario that expects a completed assessment should supply the
+missing detail in a later turn rather than fail on the question.
+
+**Report the whole `execute` object, not only `answer`.** `answer` is the text
+a person reads; the judgement is in the fields beside it. Pass them through as
+structured output so a check can read them directly instead of parsing prose:
+
+| field | what a check reads from it |
+| --- | --- |
+| `status` | `completed` or `needs_input` |
+| `severity`, `service`, `tier`, `owning_team` | what the desk claimed, to compare with `ops-directory` |
+| `calls` | which tools it called, with which arguments |
+| `customer_note`, `note_file`, `incident_record_file` | what a customer would see, and the files on disk |
+| `usage`, `metrics` | tokens, latency, call counts |
+
+**Write checks the desk can actually satisfy or fail:**
+
+- Use the registered services (`checkout-api`, `notify-worker`,
+  `search-indexer`) unless the scenario is about an unregistered one.
+- The desk cannot be seeded: there is no hook to plant an incident record,
+  a directory entry or a session before a scenario starts. A scenario that
+  needs prior state builds it with earlier turns in the same session.
+- A prohibition ("the note must not contain the on-call address") is a check
+  that the forbidden text is **absent** from `customer_note` / `note_file` — not
+  a pattern that matches it.
+- A required lookup is "`lookup_service` was called with `name: checkout-api`",
+  not an exact call count: a turn may call it more than once.
 
 ## Failure
 

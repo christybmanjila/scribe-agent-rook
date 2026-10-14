@@ -13,7 +13,7 @@ name: Rook prepare suite
 #                        dropped, and generation runs once more if too few are left
 #   4. Profile add       rook profile add (from docs/invoking.md), then rook profile test
 #   5. Rehearsal run     rook sync + rook run once (optional), so the PR shows which pass
-#   6. Open PR           the new project folder on a branch, as a PR for review
+#   6. Open PR           the new project folder on rook/prepare-<project>-<run>, as a PR
 #
 # Each stage runs on a fresh runner, so .testmuai/ travels between stages as an artifact; a
 # re-run of failed jobs picks up from the stage that failed. Rook commands are retried when
@@ -564,7 +564,7 @@ jobs:
           cp -R "$src" .testmuai/rook/projects/
           rm -rf ".testmuai/rook/projects/$PROJECT_DIR"/agents/*/runs
           [ -f .testmuai/rook/.gitignore ] || cp "$RUNNER_TEMP/workspace/rook/.gitignore" .testmuai/rook/.gitignore
-          branch="rook/prepare-$ROOK_PROJECT_ID"
+          branch="rook/prepare-$ROOK_PROJECT_ID-$GITHUB_RUN_ID"
           git switch -c "$branch"
           git add .testmuai/rook
           git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \

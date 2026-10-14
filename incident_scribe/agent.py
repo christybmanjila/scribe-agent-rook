@@ -293,8 +293,18 @@ def run_turn(session, goal: str) -> dict[str, Any]:
     # quoted from incident history; only a completed assessment speaks for it.
     if status != "completed":
         severity = None
+    # A follow-up turn in a session that already holds a service record (a
+    # reformat, a question about the note) looks nothing up and assesses no new
+    # report, so its reply rightly carries no SEVERITY line. Demanding one there
+    # replaced every follow-up with the same canned question, turn after turn.
+    # Such a turn keeps the severity already established; a turn that assesses
+    # a report (a fresh lookup, or the session's first turn) still must state it.
+    assessing = not isinstance(prior_record, dict) or any(c["name"] == "lookup_service" for c in calls_made)
+    if status == "completed" and severity is None and not assessing:
+        severity = prior_state.get("severity")
+    contradicts = bool(severity and policy_severity and severity != policy_severity)
     if status == "completed" and service_record and (
-        severity is None or (policy_severity and severity != policy_severity)
+        contradicts or (severity is None and assessing)
     ):
         status = "needs_input"
         assessment = "STATUS: NEEDS_INPUT\nPlease provide a symptom and impact that can be placed in the severity matrix."
